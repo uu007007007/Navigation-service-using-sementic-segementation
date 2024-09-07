@@ -53,12 +53,13 @@ class_colors = {
     "Driveable Space": [123, 104, 238],
     "Disabled Parking Space": [255, 182, 193],
     "Parking Space": [0, 191, 255],
-    "Human": [165, 42, 42]
+    "Human": [165, 42, 42],
+	"Recommend" : [0,0,255]
 }
 
 #inference 할 영상 파일
 input_video_path = "/home/road2022/parking_project/detectron2/front2.mp4"
-output_video_path = 'night_demo.mov'
+output_video_path = 'num_parking.mov'
 
 
 
@@ -115,15 +116,20 @@ class parking:
 					outputs = predictor(im)  # 모델 예측
 
 				pred_classes, pred_masks, pred_score = self.get_output(outputs)
-				
-				image_ori = self.visualize(im, pred_classes, pred_masks, pred_score)
+				# num_parking = pred_classes.numpy().count(15) # parking class 개수
+				num_parking = np.sum(pred_classes.numpy() == 15)
+				print(num_parking)
+
+				# image,  distance= self.image_process(pred_classes, pred_masks, pred_score, im)
+				out_image = self.process(im, pred_classes, pred_masks, pred_score)
 				# self.maintain_area()
-				out_image = self.image_process(pred_classes, pred_masks, pred_score, image_ori)
+				
 
 				# FPS 계산			
 				total_time = time.time() - st
 				FPS = int(1 / total_time)
 				cv2.putText(out_image, f"FPS: {FPS}", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
+				cv2.putText(out_image, f"Num Parking: {num_parking}", (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
 				out.write(out_image)
 				# 결과 출력
 				cv2.imshow("Video", out_image)
@@ -138,40 +144,91 @@ class parking:
 			cv2.destroyAllWindows()
 
 
-	def get_fixed_color(self, i):
-		random.seed(i)  # 클래스 인덱스에 따라 색상을 고정
-		r = random.randint(0, 255)/255
-		g = random.randint(0, 255)/255
-		b = random.randint(0, 255)/255
-		return (r, g, b)
-
-	def visualize(self, im, pred_classes, pred_masks, pred_scores):
+	def process(self, im, pred_classes, pred_masks, pred_scores):
 		# instances = outputs["instances"]
-		target_classes = [15] # 시각화할 클래스 번호
-		
+		# target_classes = [15] # 시각화할 클래스 번호
+		compare_dis = None
+		best_idx = None
 		for i in range(len(pred_classes)):
 			class_id = pred_classes[i].item()
 			class_name = test_metadata.thing_classes[class_id]
 			score = pred_scores[i].item()
 			mask = pred_masks[i].numpy()
-			color = class_colors.get(class_name, [255, 255, 255])  # Default to white if not found
-
-			# 마스크 적용
-			for c in range(3):  # BGR 순으로 채널
-				im[:, :, c] = np.where(mask == 1,
-										im[:, :, c] * 0.5 + color[2-c] * 0.5,  # BGR -> RGB 매핑
-										im[:, :, c])
-			# 클래스명 및 컨피던스 표시
 			y, x = np.where(mask)
-			if len(y) > 0 and len(x) > 0:
-				y, x = y[0], x[0]  # 첫 번째 마스크 위치
-				cv2.putText(
-					im, f"{class_name}: {score:.2f}", 
-					(x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2
-				)
 
+			
+			if class_id == 15:
+				mask = pred_masks[i]
+
+				# 무게중심 계산
+				coords = torch.nonzero(mask).cpu().numpy()
+				centroid_y, centroid_x = np.mean(coords, axis=0)
+
+				#무게중심 시각화
+				cv2.circle(im, (int(centroid_x), int(centroid_y)), 2, (0,0,255), 2)
+
+				#무게중심까지의 상대거리 계산
+				distance = self.get_distance(centroid_x, centroid_y, im.shape[1], im.shape[0])
+				if compare_dis is not None:
+					if compare_dis > distance:
+						compare_dis = distance
+						best_idx = i
+				else:
+					compare_dis = distance
+					best_idx = i
+
+					
+				# 클래스명 및 컨피던스 표시
+				
+				if len(y) > 0 and len(x) > 0:
+					y, x = y[0], x[0]  # 첫 번째 마스크 위치
+					cv2.putText(
+						im, f"{class_name}: {score:.2f}, Dis: {distance:.2f}", 
+						(x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255, 255, 255), 1
+					)
+			else:
+				if len(y) > 0 and len(x) > 0:
+					y, x = y[0], x[0]  # 첫 번째 마스크 위치
+					cv2.putText(
+						im, f"{class_name}: {score:.2f}", 
+						(x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255, 255, 255), 1
+					)
+		self.masking(im,  pred_classes, pred_masks, best_idx)
 			# 클래스명 및 신뢰도 로그 출력
 			# print(f"Detected {class_name} with confidence: {score:.2f}")
+					# 마스크 적용
+		return im
+
+
+	def masking(self,im, pred_classes, pred_masks, best_idx):
+		for i in range(len(pred_classes)):
+			mask = pred_masks[i].numpy()
+			class_id = pred_classes[i].item()
+			class_name = test_metadata.thing_classes[class_id]
+			color = class_colors.get(class_name, [255, 255, 255])  # Default to white if not found
+			if best_idx is not None:
+				if i == best_idx:
+					color = [0,0,255]
+					for c in range(3):  # BGR 순으로 채널
+						im[:, :, c] = np.where(mask == 1,
+												im[:, :, c] * 0.3 + color[2-c] * 0.7,  # BGR -> RGB 매핑
+												im[:, :, c])
+					# 윤곽선 추출
+					mask_uint8 = (mask * 255).astype(np.uint8)  # mask를 uint8로 변환
+					contours, _ = cv2.findContours(mask_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+					# 원본 이미지에 윤곽선 그리기
+					cv2.drawContours(im, contours, -1, (0, 255, 0), 5)  # 초록색 윤곽선
+				else:
+					for c in range(3):  # BGR 순으로 채널
+						im[:, :, c] = np.where(mask == 1,
+												im[:, :, c] * 0.5 + color[2-c] * 0.5,  # BGR -> RGB 매핑
+												im[:, :, c])
+			else:
+				for c in range(3):  # BGR 순으로 채널
+					im[:, :, c] = np.where(mask == 1,
+											im[:, :, c] * 0.5 + color[2-c] * 0.5,  # BGR -> RGB 매핑
+											im[:, :, c])
 
 		return im
 
@@ -186,34 +243,46 @@ class parking:
 		pred_score = instances.scores
 		return pred_classes, pred_masks, pred_score
 
-	def draw_minRect(self, img, coords):
-		rect = cv2.minAreaRect(coords)
-		box = cv2.boxPoints(rect)
-		box = np.int0(box)
-		# print(box)
-		cv2.drawContours(img, [box], 0, (0, 0, 255), 2)
-		return img
+	# def draw_minRect(self, img, coords):
+	# 	rect = cv2.minAreaRect(coords)
+	# 	box = cv2.boxPoints(rect)
+	# 	box = np.int0(box)
+	# 	# print(box)
+	# 	cv2.drawContours(img, [box], 0, (0, 0, 255), 2)
+	# 	return img
 
 
 
 	def image_process(self, pred_classes, pred_masks, pred_score, image):
+		distance = None
 		for i in range(len(pred_classes)):
 			if pred_classes[i] == 15:
-				if pred_score[i] >= 0.9:
-					# print("pred_score :", pred_score[i])
-					mask = pred_masks[i]
-					# 객체의 마스크에서 활성화된 픽셀의 (x, y) 좌표 추출
-					coords = torch.nonzero(mask).cpu().numpy()
-					# print(f"Object {i} mask coordinates:")
-					# print(coords)
-					for coord in coords:
-						c0 = coord[0]
-						c1 = coord[1]
-						coord[0] = c1
-						coord[1] = c0
-					# draw_minRect(image, coords)
+				mask = pred_masks[i]
 
-		return image
+				# 무게중심 계산
+				coords = torch.nonzero(mask).cpu().numpy()
+				centroid_y, centroid_x = np.mean(coords, axis=0)
+
+				#무게중심 시각화
+				cv2.circle(image, (int(centroid_x), int(centroid_y)), 2, (0,0,255), 2)
+
+				#무게중심까지의 상대거리 계산
+				distance = self.get_distance(centroid_x, centroid_y, image.shape[1], image.shape[0])
+
+
+		return image, distance
+	
+	def get_distance(self, u, v, width, height):
+		fx = width/2
+		fy = height/2
+		Cx = width/2
+		Cy = height/2
+
+		Z = fy / (Cy-v) #전방 거리
+		X = ((u-Cx)*Z)/fx #측방 거리
+		distance = np.sqrt(X**2 + Z**2) #2D 상대거리
+		
+		return distance
 
 
 

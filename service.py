@@ -29,7 +29,7 @@ cfg.merge_from_file("/home/road2022/parking_project/detectron2/configs/COCO-Inst
 cfg.MODEL.WEIGHTS = "/home/road2022/parking_project/detectron2/model_final.pth"  # 모델 경로
 cfg.MODEL.ROI_HEADS.BATCH_SIZE_PER_IMAGE = 128
 cfg.MODEL.ROI_HEADS.NUM_CLASSES = 17
-cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = 0.85
+cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = 0.8
 cfg.MODEL.DEVICE = "cuda"  # GPU 사용
 
 #predictor 정의
@@ -58,14 +58,14 @@ class_colors = {
 
 #inference 할 영상 파일
 input_video_path = "/home/road2022/parking_project/detectron2/front2.mp4"
-output_video_path = 'night_demo.mov'
+output_video_path = 'output_video.mov'
 
 
 
 class parking:
 	def __init__ (self):
 		self.mask_list = []
-		self.black_board = np.zeros((720, 1280))
+
 		mode = 'video'
 		# mode = 'image'
 		self.main(mode)
@@ -90,7 +90,7 @@ class parking:
 			fps = int(cap.get(cv2.CAP_PROP_FPS))
 
 			# VideoWriter 객체 생성 (코덱 설정, 파일 경로, FPS, 프레임 크기)
-			fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # 코덱 설정 (XVID, MP4V 등)
+			fourcc = cv2.VideoWriter_fourcc(*'avc1')  # 코덱 설정 (XVID, MP4V 등)
 			out = cv2.VideoWriter(output_video_path, fourcc, fps, (frame_width, frame_height))
 
 			# 프레임 스킵 설정 (속도를 올리기 위해 프레임 건너뜀)
@@ -109,16 +109,18 @@ class parking:
 				# Gamma 보정 (필요시 비활성화 가능)
 				gamma = 1  #밝기 배수
 				im = self.adjust_gamma(im, gamma=gamma)
+				black_board = np.zeros((720, 1280), dtype=np.uint8)
+				black_board = np.stack((black_board,) * 3, axis=-1)
 
 				# Mixed Precision (FP16) 적용
 				with torch.cuda.amp.autocast():
 					outputs = predictor(im)  # 모델 예측
 
-				pred_classes, pred_masks, pred_score = self.get_output(outputs)
-				
-				image_ori = self.visualize(im, pred_classes, pred_masks, pred_score)
+				pred_classes, pred_masks, pred_scores = self.get_output(outputs)
+				navi = self.BEV_seg(black_board, pred_masks)
+				image_ori = self.visualize(im, pred_classes, pred_masks, pred_scores)
 				# self.maintain_area()
-				out_image = self.image_process(pred_classes, pred_masks, pred_score, image_ori)
+				out_image = self.image_process(pred_classes, pred_masks, pred_scores, image_ori)
 
 				# FPS 계산			
 				total_time = time.time() - st
@@ -127,6 +129,7 @@ class parking:
 				out.write(out_image)
 				# 결과 출력
 				cv2.imshow("Video", out_image)
+				cv2.imshow("black board", navi)
 
 				# Esc 키 누르면 종료
 				if cv2.waitKey(1) & 0xFF == 27:
@@ -174,15 +177,20 @@ class parking:
 			# print(f"Detected {class_name} with confidence: {score:.2f}")
 
 		return im
+	# def maintain_area(self):
+	# 	for mask in self.mask_list[0]:
+			
+		# 교차 영역 계산
+		# intersection_area, intersection_polygon = cv2.intersectConvexConvex(polygon1, polygon2)
 
 	def get_output(self, outputs):
 		instances = outputs["instances"].to("cpu")
 		pred_classes = instances.pred_classes
 		pred_masks = instances.pred_masks
-		# self.mask_list.append(pred_masks)
-		# if len(self.mask_list) >= 3:
-		# 	self.mask_list.pop(0)
-		# print(f'마스킹 길이 {len(self.mask_list)}')
+		self.mask_list.append(pred_masks)
+		if len(self.mask_list) >= 3:
+			self.mask_list.pop(0)
+		print(f'마스킹 길이 {len(self.mask_list)}')
 		pred_score = instances.scores
 		return pred_classes, pred_masks, pred_score
 
@@ -197,6 +205,8 @@ class parking:
 
 
 	def image_process(self, pred_classes, pred_masks, pred_score, image):
+		print(image.shape)
+		# image = self.bird_eye_view(image)
 		for i in range(len(pred_classes)):
 			if pred_classes[i] == 15:
 				if pred_score[i] >= 0.9:
@@ -214,8 +224,45 @@ class parking:
 					# draw_minRect(image, coords)
 
 		return image
+	def bird_eye_view(self, image):
+		# src_points = np.float32([[0, 0], [1280, 0], [1280, 720], [0, 720]])
+		
+		
 
+		src_points = np.float32([[340, 380], [690, 380], [1340, 600], [-60, 600]])
+		# points = [[340, 400], [690, 400], [1270, 600], [10, 600]]
+		# for point in points:
+		# 	print(point)
+		# 	cv2.circle(image, point, 1, (0,0,255), thickness=2)
+		# 변환할 버드아이뷰의 목표 영역 정의 (출력 이미지 크기와 동일하게 설정)
+		# 출력 이미지에서의 대응 좌표 설정
+		# dst_points = np.float32([[0, 0], [1280, 0], [1280, 720], [0, 720]])
+		dst_points = np.float32([[0, 0], [1280, 0], [880, 720], [400, 720]])
+		
 
+		# 변환 행렬 계산
+		M = cv2.getPerspectiveTransform(src_points, dst_points)
+
+		# 투시 변환을 적용 (출력 이미지 크기를 (400, 600)으로 설정)
+		output_image = cv2.warpPerspective(image, M, (1280, 720))
+
+		return output_image
+	
+
+	def BEV_seg(self, im, masks):
+		src_points = np.float32([[340, 380], [690, 380], [1340, 600], [-60, 600]])
+		dst_points = np.float32([[0, 0], [1280, 0], [880, 720], [400, 720]])
+		for mask in masks:
+			mask = mask.numpy()
+			color = [123, 104, 238]
+			M = cv2.getPerspectiveTransform(src_points, dst_points)
+			print(type(mask))
+			mask_transformed = cv2.warpPerspective(mask.astype(np.float32), M, (1280, 720))
+			for c in range(3):  # BGR 순으로 채널
+					im[:, :, c] = np.where(mask_transformed == 1,
+											im[:, :, c] * 0.5 + color[2-c] * 0.5,  # BGR -> RGB 매핑
+											im[:, :, c])
+		return im
 
 	def adjust_gamma(self, image, gamma=1.0):
 			inv_gamma = 1.0 / gamma
