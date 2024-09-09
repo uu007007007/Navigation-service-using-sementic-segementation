@@ -2,4 +2,4 @@
 *.mov
 *.pth
 .git
-val.json
+*.json
