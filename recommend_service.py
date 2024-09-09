@@ -58,8 +58,8 @@ class_colors = {
 }
 
 #inference 할 영상 파일
-input_video_path = "/home/road2022/parking_project/detectron2/front2.mp4"
-output_video_path = 'num_parking.mov'
+input_video_path = "/home/road2022/parking_project/detectron2/night.mp4"
+output_video_path = 'night_test.mov'
 
 
 
